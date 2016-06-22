@@ -2163,18 +2163,9 @@ mi_execute_command (const char *cmd, int from_tty)
 	    = (struct mi_interp *) top_level_interpreter_data ();
 	  int report_change = 0;
 
-	  if (command->thread == -1)
-	    {
-	      report_change = (!ptid_equal (previous_ptid, null_ptid)
-			       && !ptid_equal (inferior_ptid, previous_ptid)
-			       && !ptid_equal (inferior_ptid, null_ptid));
-	    }
-	  else if (!ptid_equal (inferior_ptid, null_ptid))
-	    {
-	      struct thread_info *ti = inferior_thread ();
-
-	      report_change = (ti->global_num != command->thread);
-	    }
+	  report_change = (!ptid_equal (previous_ptid, null_ptid)
+				       && !ptid_equal (inferior_ptid, previous_ptid)
+				       && !ptid_equal (inferior_ptid, null_ptid));
 
 	  if (report_change)
 	    {
@@ -2201,6 +2192,7 @@ static void
 mi_cmd_execute (struct mi_parse *parse)
 {
   struct cleanup *cleanup;
+  struct cleanup *current_thread_cleanup = NULL;
 
   cleanup = prepare_execute_command ();
 
@@ -2224,6 +2216,8 @@ mi_cmd_execute (struct mi_parse *parse)
       if (!inf)
 	error (_("Invalid thread group for the --thread-group option"));
 
+      current_thread_cleanup = make_cleanup_restore_current_thread ();
+
       set_current_inferior (inf);
       /* This behaviour means that if --thread-group option identifies
 	 an inferior with multiple threads, then a random one will be
@@ -2245,6 +2239,8 @@ mi_cmd_execute (struct mi_parse *parse)
 
       if (is_exited (tp->ptid))
 	error (_("Thread id: %d has terminated"), parse->thread);
+
+      current_thread_cleanup = make_cleanup_restore_current_thread ();
 
       switch_to_thread (tp->ptid);
     }
@@ -2269,6 +2265,7 @@ mi_cmd_execute (struct mi_parse *parse)
     }
 
   current_context = parse;
+  meant_to_change_current_thread = 0;
 
   if (parse->cmd->suppress_notification != NULL)
     {
@@ -2302,6 +2299,12 @@ mi_cmd_execute (struct mi_parse *parse)
       make_cleanup_ui_file_delete (stb);
       error_stream (stb);
     }
+
+  if (meant_to_change_current_thread && current_thread_cleanup != NULL)
+    {
+      discard_cleanups (current_thread_cleanup);
+    }
+
   do_cleanups (cleanup);
 }
 

@@ -1411,6 +1411,8 @@ info_threads_command (char *arg, int from_tty)
   print_thread_info_1 (current_uiout, arg, 0, -1, show_global_ids);
 }
 
+int meant_to_change_current_thread = 0;
+
 /* See gdbthread.h.  */
 
 void
@@ -2036,6 +2038,8 @@ do_captured_thread_select (struct ui_out *uiout, void *tidstr_v)
 {
   const char *tidstr = (const char *) tidstr_v;
   struct thread_info *tp;
+
+  meant_to_change_current_thread = 1;
 
   if (ui_out_is_mi_like_p (uiout))
     {

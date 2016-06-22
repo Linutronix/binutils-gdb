@@ -469,6 +469,8 @@ extern struct thread_info *iterate_over_threads (thread_callback_func, void *);
 
 extern int thread_count (void);
 
+extern int meant_to_change_current_thread;
+
 /* Switch from one thread to another.  Also sets the STOP_PC
    global.  */
 extern void switch_to_thread (ptid_t ptid);
