@@ -66,8 +66,7 @@ elf_core_file_matches_executable_p (bfd *core_bfd, bfd *exec_bfd)
 
 /*  Core files are simply standard ELF formatted files that partition
     the file using the execution view of the file (program header table)
-    rather than the linking view.  In fact, there is no section header
-    table in a core file.
+    rather than the linking view.
 
     The process status information (including the contents of the general
     register set) and the floating point register set are stored in a
@@ -82,6 +81,10 @@ elf_core_file_p (bfd *abfd)
   Elf_Internal_Ehdr *i_ehdrp;	/* Elf file header, internal form.  */
   Elf_Internal_Phdr *i_phdrp;	/* Elf program header, internal form.  */
   unsigned int phindex;
+  Elf_External_Shdr x_shdr;     /* Section header table entry, external form */
+  Elf_Internal_Shdr i_shdr;
+  Elf_Internal_Shdr *i_shdrp;   /* Section header table, internal form */
+  unsigned int shindex;
   const struct elf_backend_data *ebd;
   bfd_size_type amt;
 
@@ -182,30 +185,158 @@ elf_core_file_p (bfd *abfd)
   if (i_ehdrp->e_phentsize != sizeof (Elf_External_Phdr))
     goto wrong;
 
-  /* If the program header count is PN_XNUM(0xffff), the actual
-     count is in the first section header.  */
-  if (i_ehdrp->e_shoff != 0 && i_ehdrp->e_phnum == PN_XNUM)
+  if (i_ehdrp->e_shoff != 0)
     {
-      Elf_External_Shdr x_shdr;
-      Elf_Internal_Shdr i_shdr;
       file_ptr where = (file_ptr) i_ehdrp->e_shoff;
 
       /* Seek to the section header table in the file.  */
       if (bfd_seek (abfd, where, SEEK_SET) != 0)
-	goto fail;
+	goto got_no_match;
 
       /* Read the first section header at index 0, and convert to internal
 	 form.  */
-      if (bfd_bread (&x_shdr, sizeof (x_shdr), abfd) != sizeof (x_shdr))
-	goto fail;
+      if (bfd_bread (&x_shdr, sizeof x_shdr, abfd) != sizeof (x_shdr))
+	goto got_no_match;
       elf_swap_shdr_in (abfd, &x_shdr, &i_shdr);
 
-      if (i_shdr.sh_info != 0)
+      /* If the section count is zero, the actual count is in the first
+	 section header.  */
+      if (i_ehdrp->e_shnum == SHN_UNDEF)
+	{
+	  i_ehdrp->e_shnum = i_shdr.sh_size;
+	  if (i_ehdrp->e_shnum >= SHN_LORESERVE
+	      || i_ehdrp->e_shnum != i_shdr.sh_size
+	      || i_ehdrp->e_shnum  == 0)
+	    goto got_wrong_format_error;
+	}
+
+      /* And similarly for the string table index.  */
+      if (i_ehdrp->e_shstrndx == (SHN_XINDEX & 0xffff))
+	{
+	  i_ehdrp->e_shstrndx = i_shdr.sh_link;
+	  if (i_ehdrp->e_shstrndx != i_shdr.sh_link)
+	    goto got_wrong_format_error;
+	}
+
+      /* And program headers.  */
+      if (i_ehdrp->e_phnum == PN_XNUM && i_shdr.sh_info != 0)
 	{
 	  i_ehdrp->e_phnum = i_shdr.sh_info;
 	  if (i_ehdrp->e_phnum != i_shdr.sh_info)
-	    goto wrong;
+	    goto got_wrong_format_error;
 	}
+
+      /* Sanity check that we can read all of the section headers.
+	 It ought to be good enough to just read the last one.  */
+      if (i_ehdrp->e_shnum != 1)
+	{
+	  /* Check that we don't have a totally silly number of sections.  */
+	  if (i_ehdrp->e_shnum > (unsigned int) -1 / sizeof (x_shdr)
+	      || i_ehdrp->e_shnum > (unsigned int) -1 / sizeof (i_shdr))
+	    goto got_wrong_format_error;
+
+	  where += (i_ehdrp->e_shnum - 1) * sizeof (x_shdr);
+	  if ((bfd_size_type) where <= i_ehdrp->e_shoff)
+	    goto got_wrong_format_error;
+
+	  if (bfd_seek (abfd, where, SEEK_SET) != 0)
+	    goto got_no_match;
+	  if (bfd_bread (&x_shdr, sizeof x_shdr, abfd) != sizeof (x_shdr))
+	    goto got_no_match;
+
+	  /* Back to where we were.  */
+	  where = i_ehdrp->e_shoff + sizeof (x_shdr);
+	  if (bfd_seek (abfd, where, SEEK_SET) != 0)
+	    goto got_no_match;
+	}
+    }
+
+  /* Allocate space for a copy of the section header table in
+     internal form.  */
+  if (i_ehdrp->e_shnum != 0)
+    {
+      Elf_Internal_Shdr *shdrp;
+      unsigned int num_sec;
+
+      amt = sizeof (*i_shdrp) * i_ehdrp->e_shnum;
+      i_shdrp = (Elf_Internal_Shdr *) bfd_alloc (abfd, amt);
+      if (!i_shdrp)
+	goto got_no_match;
+      num_sec = i_ehdrp->e_shnum;
+      elf_numsections (abfd) = num_sec;
+      amt = sizeof (i_shdrp) * num_sec;
+      elf_elfsections (abfd) = (Elf_Internal_Shdr **) bfd_alloc (abfd, amt);
+      if (!elf_elfsections (abfd))
+	goto got_no_match;
+
+      memcpy (i_shdrp, &i_shdr, sizeof (*i_shdrp));
+      for (shdrp = i_shdrp, shindex = 0; shindex < num_sec; shindex++)
+	elf_elfsections (abfd)[shindex] = shdrp++;
+
+      /* Read in the rest of the section header table and convert it
+	 to internal form.  */
+      for (shindex = 1; shindex < i_ehdrp->e_shnum; shindex++)
+	{
+	  if (bfd_bread (&x_shdr, sizeof x_shdr, abfd) != sizeof (x_shdr))
+	    goto got_no_match;
+	  elf_swap_shdr_in (abfd, &x_shdr, i_shdrp + shindex);
+
+	  /* Sanity check sh_link and sh_info.  */
+	  if (i_shdrp[shindex].sh_link >= num_sec)
+	    {
+	      /* PR 10478: Accept Solaris binaries with a sh_link
+		 field set to SHN_BEFORE or SHN_AFTER.  */
+	      switch (ebd->elf_machine_code)
+		{
+		case EM_386:
+		case EM_IAMCU:
+		case EM_X86_64:
+		case EM_OLD_SPARCV9:
+		case EM_SPARC32PLUS:
+		case EM_SPARCV9:
+		case EM_SPARC:
+		  if (i_shdrp[shindex].sh_link == (SHN_LORESERVE & 0xffff) /* SHN_BEFORE */
+		      || i_shdrp[shindex].sh_link == ((SHN_LORESERVE + 1) & 0xffff) /* SHN_AFTER */)
+		    break;
+		  /* Otherwise fall through.  */
+		default:
+		  goto got_wrong_format_error;
+		}
+	    }
+
+	  if (((i_shdrp[shindex].sh_flags & SHF_INFO_LINK)
+	       || i_shdrp[shindex].sh_type == SHT_RELA
+	       || i_shdrp[shindex].sh_type == SHT_REL)
+	      && i_shdrp[shindex].sh_info >= num_sec)
+	    goto got_wrong_format_error;
+
+	  /* If the section is loaded, but not page aligned, clear
+	     D_PAGED.  */
+	  if (i_shdrp[shindex].sh_size != 0
+	      && (i_shdrp[shindex].sh_flags & SHF_ALLOC) != 0
+	      && i_shdrp[shindex].sh_type != SHT_NOBITS
+	      && (((i_shdrp[shindex].sh_addr - i_shdrp[shindex].sh_offset)
+		   % ebd->minpagesize)
+		  != 0))
+	    abfd->flags &= ~D_PAGED;
+	}
+    }
+
+  if (i_ehdrp->e_shstrndx != 0 && i_ehdrp->e_shoff != 0)
+    {
+      unsigned int num_sec;
+
+      /* Once all of the section headers have been read and converted, we
+	 can start processing them.  Note that the first section header is
+	 a dummy placeholder entry, so we ignore it.  */
+      num_sec = elf_numsections (abfd);
+      for (shindex = 1; shindex < num_sec; shindex++)
+	if (!bfd_section_from_shdr (abfd, shindex))
+	  goto got_no_match;
+
+      /* Set up ELF sections for SHF_GROUP and SHF_LINK_ORDER.  */
+      if (! _bfd_elf_setup_sections (abfd))
+	goto got_wrong_format_error;
     }
 
   /* Sanity check that we can read all of the program headers.
@@ -308,7 +439,9 @@ elf_core_file_p (bfd *abfd)
   return abfd->xvec;
 
 wrong:
+got_wrong_format_error:
   bfd_set_error (bfd_error_wrong_format);
 fail:
+got_no_match:
   return NULL;
 }
