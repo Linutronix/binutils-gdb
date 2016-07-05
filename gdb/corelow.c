@@ -274,44 +274,73 @@ static int is_minicore (void)
   return VEC_length (mem_range_s, core_data.minicore_dumped_ranges) > 0;
 }
 
+#define NT_DUMPLIST 80
+
 static void
-minicore_parse_dumped_ranges (const char *core_path)
+minicore_parse_dumped_ranges (bfd *abfd)
 {
-  char *collected_path;
-  char line[1024];
-  const char *dir;
-  FILE *f;
+  asection *asec;
+  bfd_byte *note;
+  bfd_byte *buf;
+  int name_size;
+  int desc_size;
+  int count;
+  int type;
+  int i;
+
+  asec = bfd_get_section_by_name (abfd, ".note.minicoredumper.dumplist");
+  if (asec == NULL)
+    return;
 
   /* Clear vector from previous runs.  */
   VEC_free (mem_range_s, core_data.minicore_dumped_ranges);
 
-  dir = mdir_name (core_path);
-  if (dir == NULL)
-    return;
-
-  collected_path = xasprintf ("%s/dumped", dir);
-
-  f = gdb_fopen_cloexec (collected_path, "r");
-  xfree (collected_path);
-  if (f == NULL)
-    return;
-
-  while (fgets (line, sizeof (line), f) != NULL)
+  /* Get section contents.  */
+  if (!bfd_malloc_and_get_section (abfd, asec, &note))
     {
-      CORE_ADDR addr;
-      size_t len;
+      warning (_("Error retrieving dump list. (%s)"),
+	       bfd_errmsg (bfd_get_error ()));
+	return;
+    }
+
+  buf = note;
+
+  /* Get note information.  */
+  name_size = bfd_get_32 (abfd, buf);
+  buf += sizeof (uint32_t);
+  desc_size = bfd_get_32 (abfd, buf);
+  buf += sizeof (uint32_t);
+  type = bfd_get_32 (abfd, buf);
+  buf += sizeof (uint32_t);
+
+  /* Verify owner and type.  */
+  if (strcmp ((const char *)buf, "minicoredumper") != 0)
+    goto out;
+  if (type != NT_DUMPLIST)
+    goto out;
+
+  /* Skip past name (4-byte padded).  */
+  buf += (name_size + 3) & ~0x3;
+
+  /* Each dump range contains a start and length.  */
+  count = desc_size / (bfd_arch_bits_per_address (abfd) / 4);
+
+  /* Collect the dumped ranges.  */
+  for (i = 0; i < count; i++)
+    {
       mem_range_s range;
 
-      if (sscanf (line, "dump 0x%lx %zu", &addr, &len) != 2)
-	continue;
-
-      range.start = addr;
-      range.length = len;
+      range.start = bfd_get(bfd_arch_bits_per_address (abfd), abfd, buf);
+      buf += bfd_arch_bits_per_address (abfd) / 8;
+      range.length = bfd_get(bfd_arch_bits_per_address (abfd), abfd, buf);
+      buf += bfd_arch_bits_per_address (abfd) / 8;
 
       VEC_safe_push (mem_range_s, core_data.minicore_dumped_ranges, &range);
     }
 
   normalize_mem_ranges (core_data.minicore_dumped_ranges);
+out:
+  free (note);
 }
 
 /* This routine opens and sets up the core file bfd.  */
@@ -398,7 +427,7 @@ core_open (const char *arg, int from_tty)
     error (_("\"%s\": Can't find sections: %s"),
 	   bfd_get_filename (core_bfd), bfd_errmsg (bfd_get_error ()));
 
-  minicore_parse_dumped_ranges (bfd_get_filename (core_bfd));
+  minicore_parse_dumped_ranges (core_bfd);
 
   /* If we have no exec file, try to set the architecture from the
      core file.  We don't do this unconditionally since an exec file
