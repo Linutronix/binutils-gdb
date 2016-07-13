@@ -279,6 +279,7 @@ static int is_minicore (void)
 static void
 minicore_parse_dumped_ranges (bfd *abfd)
 {
+  bfd_size_type data_size;
   asection *asec;
   bfd_byte *note;
   bfd_byte *buf;
@@ -305,41 +306,53 @@ minicore_parse_dumped_ranges (bfd *abfd)
 
   buf = note;
 
-  /* Get note information.  */
-  name_size = bfd_get_32 (abfd, buf);
-  buf += sizeof (uint32_t);
-  desc_size = bfd_get_32 (abfd, buf);
-  buf += sizeof (uint32_t);
-  type = bfd_get_32 (abfd, buf);
-  buf += sizeof (uint32_t);
+  data_size = bfd_get_section_size (asec);
 
-  /* Verify owner and type.  */
-  if (strcmp ((const char *)buf, "minicoredumper") != 0)
-    goto out;
-  if (type != NT_DUMPLIST)
-    goto out;
+  while (buf < (note + data_size)) {
+    int is_dumplist = 1;
 
-  /* Skip past name (4-byte padded).  */
-  buf += (name_size + 3) & ~0x3;
+    /* Get note information.  */
+    name_size = bfd_get_32 (abfd, buf);
+    buf += sizeof (uint32_t);
+    desc_size = bfd_get_32 (abfd, buf);
+    buf += sizeof (uint32_t);
+    type = bfd_get_32 (abfd, buf);
+    buf += sizeof (uint32_t);
 
-  /* Each dump range contains a start and length.  */
-  count = desc_size / (bfd_arch_bits_per_address (abfd) / 4);
-
-  /* Collect the dumped ranges.  */
-  for (i = 0; i < count; i++)
-    {
-      mem_range_s range;
-
-      range.start = bfd_get(bfd_arch_bits_per_address (abfd), abfd, buf);
-      buf += bfd_arch_bits_per_address (abfd) / 8;
-      range.length = bfd_get(bfd_arch_bits_per_address (abfd), abfd, buf);
-      buf += bfd_arch_bits_per_address (abfd) / 8;
-
-      VEC_safe_push (mem_range_s, core_data.minicore_dumped_ranges, &range);
+    /* Verify owner and type.  */
+    if (strcmp ((const char *)buf, "minicoredumper") != 0 ||
+	type != NT_DUMPLIST) {
+	is_dumplist = 0;
     }
 
+    /* Skip past name (4-byte padded).  */
+    buf += (name_size + 3) & ~0x3;
+
+    if (!is_dumplist) {
+      /* Skip past desc (4-byte padded).  */
+      buf += (desc_size + 3) & ~0x3;
+      continue;
+    }
+
+    /* Each dump range contains a start and length.  */
+    count = desc_size / (bfd_arch_bits_per_address (abfd) / 4);
+
+    /* Collect the dumped ranges.  */
+    for (i = 0; i < count; i++)
+      {
+	mem_range_s range;
+
+	range.start = bfd_get(bfd_arch_bits_per_address (abfd), abfd, buf);
+	buf += bfd_arch_bits_per_address (abfd) / 8;
+	range.length = bfd_get(bfd_arch_bits_per_address (abfd), abfd, buf);
+	buf += bfd_arch_bits_per_address (abfd) / 8;
+
+	VEC_safe_push (mem_range_s, core_data.minicore_dumped_ranges, &range);
+      }
+  }
+
   normalize_mem_ranges (core_data.minicore_dumped_ranges);
-out:
+
   free (note);
 }
 
