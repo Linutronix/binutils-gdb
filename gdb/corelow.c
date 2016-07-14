@@ -322,7 +322,7 @@ minicore_parse_dumped_ranges (bfd *abfd)
     /* Verify owner and type.  */
     if (strcmp ((const char *)buf, "minicoredumper") != 0 ||
 	type != NT_DUMPLIST) {
-	is_dumplist = 0;
+      is_dumplist = 0;
     }
 
     /* Skip past name (4-byte padded).  */
